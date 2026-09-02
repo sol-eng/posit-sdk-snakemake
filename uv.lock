@@ -567,8 +567,8 @@ wheels = [
 
 [[package]]
 name = "posit-sdk"
-version = "0.1.dev257+gcff652ee4"
-source = { git = "https://github.com/michaelmayer2/posit-sdk-py?branch=workbench#cff652ee43c5e46ab41e16cc9dad59ff6857be23" }
+version = "0.1.dev258+g64e1285ed"
+source = { git = "https://github.com/michaelmayer2/posit-sdk-py?branch=workbench#64e1285edc22cf6f5435258662191fa7ce068c2b" }
 dependencies = [
     { name = "packaging" },
     { name = "requests" },
