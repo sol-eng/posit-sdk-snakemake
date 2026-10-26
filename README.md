@@ -94,3 +94,51 @@ container and the rule runs natively inside it, so no `--software-deployment-met
 is needed (apptainer couldn't run inside a Kubernetes job pod anyway). `container: "docker://..."` is Snakemake's usual
 apptainer/singularity URI form -- the `docker://` prefix is stripped automatically since
 Workbench expects a plain image reference.
+
+## Job tags, run ids and resource profiles
+
+Every job is tagged `snakemake`, `snakemake-run:<run-id>`, `snakemake-rule:<rule>` and
+`snakemake-jobid:<n>`, so all jobs of one run can be found again (see the launcher CLI below).
+The run id is random unless set with `--workbench-run-id` or `SNAKEMAKE_WORKBENCH_RUN_ID`.
+
+`--workbench-resource-profile <name>` launches every job with one of the cluster's resource
+profiles; a rule can override it with `resources: workbench_resource_profile="large"`.
+
+`examples/profiles/workbench/config.yaml` is a profile with these settings
+(`snakemake --profile profiles/workbench`).
+
+## Live progress events (logger plugin)
+
+This distribution also contains a Snakemake logger plugin that appends the run's progress as
+newline-delimited JSON to a file, for tools that follow a run from outside the Snakemake process
+(e.g. the Positron Snakemake extension):
+
+```bash
+snakemake --executor workbench --workbench-cluster <cluster> -j10 \
+  --logger workbench --logger-workbench-events-file events.ndjson
+```
+
+Console output and `.snakemake/log/` are unchanged. Each line is
+`{"v": 1, "ts": ..., "event": ...}`; events include `workflow_started`, `rulegraph`, `run_info`
+(jobs per rule), `job_info`, `job_finished`, `job_error`, `progress`, `error`, `wb_submitted` and
+`wb_status` (Workbench job id and status changes), and a final `closed`. See
+`src/snakemake_logger_plugin_workbench/__init__.py` for the fields. The logger works with any
+executor, including local runs.
+
+## Launcher CLI
+
+`posit-workbench-smk-launcher` manages Workbench jobs from the command line, with the same
+subcommands as the Nextflow integration's `posit-workbench-nf-launcher`:
+
+```bash
+posit-workbench-smk-launcher whoami                         # which credentials are active
+posit-workbench-smk-launcher clusters --json                # clusters and resource profiles
+posit-workbench-smk-launcher jobs --tag snakemake-run:<id> --json
+posit-workbench-smk-launcher kill --tag snakemake-run:<id>  # stop a run's unfinished jobs
+posit-workbench-smk-launcher output <job-id> [--stderr]
+posit-workbench-smk-launcher submit --cluster <c> --name <n> [--cpus N --mem-mb M \
+  --container IMG --resource-profile P --env K[=V] --tag T --workdir D] script.sh
+```
+
+`submit` runs a script as a Workbench job, e.g. a headless Snakemake driver that keeps running
+while your session is suspended.

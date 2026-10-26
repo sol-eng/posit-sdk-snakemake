@@ -37,12 +37,11 @@ breaks its `Union`/`Optional` detection and crashes argparse with
 import getpass
 import os
 import shlex
+import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Optional  # see note on `cluster` below -- must stay typing.Optional
 
-import posit.workbench
-import posit.workbench.admin
 from posit.workbench import WorkbenchError
 from snakemake_interface_common.exceptions import WorkflowError
 from snakemake_interface_executor_plugins.executors.base import SubmittedJobInfo
@@ -50,7 +49,17 @@ from snakemake_interface_executor_plugins.executors.remote import RemoteExecutor
 from snakemake_interface_executor_plugins.jobs import JobExecutorInterface
 from snakemake_interface_executor_plugins.settings import CommonSettings, ExecutorSettingsBase
 
-_TERMINAL_FAILURE_STATUSES = frozenset({"Failed", "Killed", "Canceled"})
+from posit_workbench_smk_launcher.workbench import (
+    TAG_JOBID,
+    TAG_RULE,
+    TAG_RUN,
+    TERMINAL_FAILURE_STATUSES,
+    launch_job,
+    make_client,
+)
+
+# Per-rule override of --workbench-resource-profile, e.g. `resources: workbench_resource_profile="large"`.
+RESOURCE_PROFILE_RESOURCE = "workbench_resource_profile"
 
 
 @dataclass
@@ -70,6 +79,24 @@ class ExecutorSettings(ExecutorSettingsBase):
             "required": True,
         },
     )
+    # Tags every job with `snakemake-run:<id>` so the jobs of one run can be listed or cancelled
+    # together (posit-workbench-smk-launcher jobs/kill --tag). Settable via the environment so a
+    # launcher (e.g. the Positron extension) can name the run without editing the command line.
+    run_id: Optional[str] = field(  # noqa: UP045
+        default=None,
+        metadata={
+            "help": "Identifier of this Snakemake run, added to every job as the tag "
+            "`snakemake-run:<id>` (default: a random id).",
+            "env_var": True,
+        },
+    )
+    resource_profile: Optional[str] = field(  # noqa: UP045
+        default=None,
+        metadata={
+            "help": "Workbench resource profile for every job (as configured for the "
+            f"cluster); a rule's `{RESOURCE_PROFILE_RESOURCE}` resource overrides it.",
+        },
+    )
 
 
 # Required: settings shared across all remote executors that Snakemake needs to know about
@@ -83,25 +110,18 @@ common_settings = CommonSettings(
 )
 
 
-def _make_client():
-    """Prefer the ambient in-session client; fall back to the Bearer-token admin client."""
-    try:
-        return posit.workbench.Client()
-    except OSError:
-        return posit.workbench.admin.Client()
-
-
 class Executor(RemoteExecutor):
     def __post_init__(self):
         if not self.workflow.executor_settings.cluster:
-            raise WorkflowError(
-                "You have to specify a Workbench cluster via --workbench-cluster."
-            )
+            raise WorkflowError("You have to specify a Workbench cluster via --workbench-cluster.")
         try:
-            self.client = _make_client()
+            self.client = make_client()
         except ValueError as e:
             raise WorkflowError(f"Failed to configure the Workbench client: {e}") from e
         self._cluster_supports_containers = self._check_cluster_supports_containers()
+        self.run_id = self.workflow.executor_settings.run_id or uuid.uuid4().hex[:12]
+        # Last Workbench status seen per job id, so status changes are logged only once.
+        self._last_status: dict[str, str] = {}
 
     def _check_cluster_supports_containers(self) -> bool:
         envs = self.client.compute_envs.list()
@@ -142,6 +162,28 @@ class Executor(RemoteExecutor):
         if not image:
             return None
         return {"image": image}
+
+    def _tags(self, job: JobExecutorInterface) -> list[str]:
+        tags = ["snakemake", f"{TAG_RUN}{self.run_id}", f"{TAG_JOBID}{job.jobid}"]
+        rules = sorted({r.name for r in job.rules}) if job.is_group() else [job.rule.name]
+        tags.extend(f"{TAG_RULE}{rule}" for rule in rules)
+        return tags
+
+    def _resource_profile(self, job: JobExecutorInterface) -> str | None:
+        profile = job.resources.get(RESOURCE_PROFILE_RESOURCE)
+        if isinstance(profile, str) and profile:
+            return profile
+        return self.workflow.executor_settings.resource_profile
+
+    def _log_workbench(self, msg: str, **info) -> None:
+        # The `workbench` record attribute is picked up by the workbench logger plugin
+        # (snakemake_logger_plugin_workbench) as a structured event; other handlers just print
+        # the message. The executor logger is a plain logging.Logger in practice, but its
+        # interface only promises info(msg), so degrade gracefully.
+        try:
+            self.logger.info(msg, extra={"workbench": info})
+        except TypeError:
+            self.logger.info(msg)
 
     def get_job_exec_prefix(self, job: JobExecutorInterface) -> str:
         if not self.workflow.storage_settings.assume_common_workdir:
@@ -185,14 +227,21 @@ class Executor(RemoteExecutor):
             resource_limits.append({"type": "memory", "value": str(resources["mem_mb"])})
 
         job_info = SubmittedJobInfo(job)
+        name = self.get_jobname(job)
+        cluster = self.workflow.executor_settings.cluster
+        tags = self._tags(job)
         try:
-            wb_job = self.client.jobs.launch(
-                cluster=self.workflow.executor_settings.cluster,
-                name=self.get_jobname(job),
+            wb_job = launch_job(
+                self.client,
+                cluster=cluster,
+                name=name,
                 exe="/bin/bash",
                 args=[jobscript],
+                environment=[{"name": "SNAKEMAKE_WORKBENCH_RUN_ID", "value": self.run_id}],
+                tags=tags,
                 resource_limits=resource_limits or None,
                 container=self._resolve_container(job),
+                resource_profile=self._resource_profile(job),
             )
         except WorkbenchError as e:
             self.report_job_error(job_info, msg=str(e))
@@ -200,6 +249,15 @@ class Executor(RemoteExecutor):
 
         job_info.external_jobid = wb_job["id"]
         self.report_job_submission(job_info)
+        self._log_workbench(
+            f"Submitted job {job.jobid} as Workbench job {wb_job['id']}.",
+            event="submitted",
+            jobid=job.jobid,
+            externalJobId=wb_job["id"],
+            jobName=name,
+            cluster=cluster,
+            tags=tags,
+        )
 
     async def check_active_jobs(
         self, active_jobs: list[SubmittedJobInfo]
@@ -218,6 +276,7 @@ class Executor(RemoteExecutor):
                     yield job_info
                     continue
 
+                self._log_status_change(job_info, status)
                 state = status.get("status")
                 if state == "Finished" and status.get("exitCode") in (0, None):
                     self.report_job_success(job_info)
@@ -228,10 +287,26 @@ class Executor(RemoteExecutor):
                     self.report_job_error(
                         job_info, msg=f"Workbench job exited with code {status.get('exitCode')}"
                     )
-                elif state in _TERMINAL_FAILURE_STATUSES:
+                elif state in TERMINAL_FAILURE_STATUSES:
                     self.report_job_error(job_info, msg=status.get("statusMessage"))
                 else:
                     yield job_info
+
+    def _log_status_change(self, job_info: SubmittedJobInfo, status: dict) -> None:
+        wb_status = status.get("status")
+        job_id = job_info.external_jobid
+        if not wb_status or self._last_status.get(job_id) == wb_status:
+            return
+        self._last_status[job_id] = wb_status
+        self._log_workbench(
+            f"Workbench job {job_id} (jobid {job_info.job.jobid}) is {wb_status}.",
+            event="status",
+            jobid=job_info.job.jobid,
+            externalJobId=job_id,
+            status=wb_status,
+            exitCode=status.get("exitCode"),
+            statusMessage=status.get("statusMessage"),
+        )
 
     def cancel_jobs(self, active_jobs: list[SubmittedJobInfo]):
         for job_info in active_jobs:

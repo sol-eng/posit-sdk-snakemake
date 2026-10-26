@@ -1074,11 +1074,12 @@ wheels = [
 
 [[package]]
 name = "snakemake-executor-plugin-workbench"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "posit-sdk" },
     { name = "snakemake-interface-executor-plugins" },
+    { name = "snakemake-interface-logger-plugins" },
 ]
 
 [package.optional-dependencies]
@@ -1101,6 +1102,7 @@ requires-dist = [
     { name = "snakemake", marker = "extra == 'snakemake'" },
     { name = "snakemake-executor-plugin-workbench", extras = ["snakemake"], marker = "extra == 'dev'" },
     { name = "snakemake-interface-executor-plugins", specifier = ">=9.3,<10" },
+    { name = "snakemake-interface-logger-plugins", specifier = ">=2.0,<3" },
 ]
 provides-extras = ["snakemake", "dev"]
 
