@@ -1,4 +1,4 @@
-"""Snakemake executor plugin for Posit Workbench, backed by posit.workbench(.admin).
+"""Snakemake executor plugin for Posit Workbench, through the Workbench Launcher API.
 
 Registration is by import-name convention (see
 snakemake_interface_common.plugin_registry.PluginRegistryBase.collect_plugins): Snakemake scans
@@ -12,17 +12,15 @@ not guaranteed to be picked up by ``pkgutil.iter_modules()``. Install this distr
 ``snakemake --executor workbench`` to find it. (In practice this worked fine under `uv pip
 install -e .` in testing, but the plugin registry's own comment says not to rely on that.)
 
-Jobs are submitted via posit.workbench's shared ``Jobs.launch()`` as Workbench jobs whose
+Jobs are submitted with the Launcher API's ``launch_job`` as Workbench jobs whose
 command is the jobscript Snakemake itself generates (a re-invocation of
 ``python -m snakemake ...`` for that one job) -- the standard RemoteExecutor pattern, which
 assumes a shared filesystem between wherever Snakemake is driven from and wherever Workbench
 runs the job (per team decision, an acceptable assumption for now).
 
-The client is chosen automatically: ``posit.workbench.Client`` (ambient session RPC cookie, no
-token needed) if running inside a Workbench session, else ``posit.workbench.admin.Client``
-(Bearer token via WORKBENCH_SERVER/WORKBENCH_API_KEY). Both expose the identical
-``.sessions``/``.jobs``/``.compute_envs``/``.users``/``.server`` resource-manager interface, so
-everything below works unmodified regardless of which one wins.
+The API client is posit_workbench_smk_launcher.workbench (standard library only). It uses the
+session's RPC cookie inside a Workbench session or job (no token needed), and otherwise a Bearer
+token via WORKBENCH_SERVER/WORKBENCH_API_KEY.
 
 IMPORTANT: this module deliberately does NOT use `from __future__ import annotations`.
 `ExecutorSettings`' CLI-arg registration (snakemake_interface_common's
@@ -42,7 +40,6 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Optional  # see note on `cluster` below -- must stay typing.Optional
 
-from posit.workbench import WorkbenchError
 from snakemake_interface_common.exceptions import WorkflowError
 from snakemake_interface_executor_plugins.executors.base import SubmittedJobInfo
 from snakemake_interface_executor_plugins.executors.remote import RemoteExecutor
@@ -54,6 +51,7 @@ from posit_workbench_smk_launcher.workbench import (
     TAG_RULE,
     TAG_RUN,
     TERMINAL_FAILURE_STATUSES,
+    WorkbenchError,
     launch_job,
     make_client,
 )
@@ -110,13 +108,25 @@ common_settings = CommonSettings(
 )
 
 
+def _mem_mb(job: JobExecutorInterface) -> int | None:
+    """The job's memory in MB. Read from the job's resources directly: Snakemake 9 counts
+    ``mem_mb`` among the resources that ``get_resource_declarations_dict`` leaves out (it
+    normalises sized resources to ``mem``), so the memory a rule asks for was never sent."""
+    value = job.resources.get("mem_mb")
+    value = getattr(value, "value", value)
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 class Executor(RemoteExecutor):
     def __post_init__(self):
         if not self.workflow.executor_settings.cluster:
             raise WorkflowError("You have to specify a Workbench cluster via --workbench-cluster.")
         try:
             self.client = make_client()
-        except ValueError as e:
+        except WorkbenchError as e:
             raise WorkflowError(f"Failed to configure the Workbench client: {e}") from e
         self._cluster_supports_containers = self._check_cluster_supports_containers()
         self.run_id = self.workflow.executor_settings.run_id or uuid.uuid4().hex[:12]
@@ -219,12 +229,12 @@ class Executor(RemoteExecutor):
         jobscript = self.get_jobscript(job)
         self.write_jobscript(job, jobscript)
 
-        resources = self.get_resource_declarations_dict(job)
         resource_limits: list[dict[str, str]] = []
         if job.threads:
             resource_limits.append({"type": "cpuCount", "value": str(job.threads)})
-        if "mem_mb" in resources:
-            resource_limits.append({"type": "memory", "value": str(resources["mem_mb"])})
+        mem_mb = _mem_mb(job)
+        if mem_mb:
+            resource_limits.append({"type": "memory", "value": str(mem_mb)})
 
         job_info = SubmittedJobInfo(job)
         name = self.get_jobname(job)

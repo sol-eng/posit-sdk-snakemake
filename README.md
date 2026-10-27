@@ -4,22 +4,20 @@ A Snakemake executor plugin for Posit Workbench, submitting jobs via the Workben
 Works whether Snakemake is driven from inside a Workbench session (ambient RPC cookie auth, no
 token needed) or from anywhere else (Bearer token via `WORKBENCH_SERVER`/`WORKBENCH_API_KEY`).
 
-The Workbench API client itself (`posit.workbench` / `posit.workbench.admin`) lives in a fork of
-`posit-sdk-py` (branch `workbench`), pulled in automatically as a dependency -- no separate clone
-needed.
+It needs nothing beyond Snakemake: the Workbench API client is built in, using only Python's
+standard library.
 
 ## Setup
 
-Requires Python >=3.11 and [uv](https://docs.astral.sh/uv/).
+Requires Python >=3.11. Install it into the environment that has Snakemake:
 
 ```bash
-git clone <this-repo>
-cd posit-sdk-snakemake
-uv venv
-uv pip install ".[snakemake]"
+pip install "git+https://github.com/sol-eng/posit-sdk-snakemake"
 ```
 
-**Important**: install this plugin itself non-editable (`uv pip install .`, not `-e .`).
+or, from a clone, `pip install .` (add `".[snakemake]"` to install Snakemake as well).
+
+**Important**: install this plugin itself non-editable (`pip install .`, not `-e .`).
 Snakemake discovers executor plugins by scanning *installed* top-level packages named
 `snakemake_executor_plugin_<name>` (`pkgutil.iter_modules()`), and that scan isn't guaranteed to
 find editable installs -- confirmed live during development.
@@ -33,10 +31,12 @@ Python (e.g. `/opt/python/...`) usually isn't, and job containers won't be able 
 
 ## Credentials
 
-- **Inside a Workbench session**: nothing to set -- the plugin uses the ambient session cookie
-  automatically (`posit.workbench.Client`).
-- **Anywhere else**: set `WORKBENCH_SERVER` and `WORKBENCH_API_KEY` (Bearer token via
-  `posit.workbench.admin.Client`).
+- **Inside a Workbench session or job**: nothing to set. The plugin uses the session's RPC cookie,
+  from `$PWB_SESSION_RUNTIME_DIR/rpc_cookie` or `RS_SESSION_RPC_COOKIE`, against
+  `RS_SERVER_ADDRESS`.
+- **Anywhere else**: set `WORKBENCH_SERVER` and `WORKBENCH_API_KEY` (a Bearer token).
+- **A server certificate from a private CA**: point `REQUESTS_CA_BUNDLE` or `SSL_CERT_FILE` at the
+  CA bundle.
 
 ## Example
 
@@ -64,9 +64,8 @@ localrule all: ...
 ```
 
 Find valid cluster names for `--workbench-cluster`:
-```python
-from posit.workbench.admin import Client   # or: from posit.workbench import Client, if in-session
-print([c["name"] for c in Client().compute_envs.list()["clusters"]])
+```bash
+posit-workbench-smk-launcher clusters
 ```
 
 Note: this assumes a shared filesystem between wherever Snakemake is driven from and wherever
@@ -142,3 +141,16 @@ posit-workbench-smk-launcher submit --cluster <c> --name <n> [--cpus N --mem-mb 
 
 `submit` runs a script as a Workbench job, e.g. a headless Snakemake driver that keeps running
 while your session is suspended.
+
+## Tests
+
+```bash
+pip install ".[dev]"
+pytest
+```
+
+`tests/fake_workbench.py` is a stand-in for the Workbench Launcher API that runs each job as a local
+process. `tests/test_end_to_end.py` uses it to run real Snakemake workflows through the executor
+and logger plugins, and the launcher CLI, without a Workbench server. Run it on its own with
+`python tests/fake_workbench.py`, then point `WORKBENCH_SERVER` at the URL it prints, with
+`WORKBENCH_API_KEY=fake-key`.

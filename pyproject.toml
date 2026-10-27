@@ -4,13 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "snakemake-executor-plugin-workbench"
-version = "0.2.0"
+version = "0.3.0"
 description = "Snakemake executor and logger plugins for Posit Workbench, plus a job launcher CLI"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
-    "posit-sdk",
     "snakemake-interface-executor-plugins>=9.3,<10",
     "snakemake-interface-logger-plugins>=2.0,<3",
 ]
@@ -22,13 +21,9 @@ posit-workbench-smk-launcher = "posit_workbench_smk_launcher.cli:main"
 snakemake = ["snakemake"]
 dev = [
     "pytest",
-    "responses",
     "ruff",
     "snakemake-executor-plugin-workbench[snakemake]",
 ]
-
-[tool.uv.sources]
-posit-sdk = { git = "https://github.com/michaelmayer2/posit-sdk-py", branch = "workbench" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

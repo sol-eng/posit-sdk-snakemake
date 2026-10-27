@@ -17,21 +17,19 @@ extensions can share their parsing:
 from __future__ import annotations
 
 import argparse
-import getpass
 import json
 import os
 import sys
 
-import posit.workbench
-import posit.workbench.admin
-from posit.workbench import WorkbenchError
-
 from .workbench import (
     TERMINAL_FAILURE_STATUSES,
+    WorkbenchCredentialsError,
+    WorkbenchError,
     has_tag,
     launch_job,
     make_client,
     resource_limits,
+    whoami,
 )
 
 # Job fields reported by `jobs --json`.
@@ -200,22 +198,12 @@ def cmd_clusters(args: argparse.Namespace) -> int:
 
 
 def cmd_whoami(args: argparse.Namespace) -> int:
-    """Report which credential path is active, to check what Snakemake's subprocesses inherit."""
+    """Report which credentials are used, checked with one API call."""
     try:
-        client = posit.workbench.Client()
-        auth = "session"
-    except OSError:
-        try:
-            client = posit.workbench.admin.Client()
-        except (OSError, ValueError) as e:
-            print(f"error: no Workbench credentials: {e}", file=sys.stderr)
-            return 1
-        auth = "api-key"
-    info = {
-        "auth": auth,
-        "server": str(getattr(client, "server_url", "") or os.environ.get("WORKBENCH_SERVER", "")),
-        "user": getpass.getuser(),
-    }
+        info = whoami()
+    except WorkbenchError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     if args.json:
         print(json.dumps(info))
     else:
@@ -291,9 +279,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (OSError, ValueError) as e:
+    except WorkbenchCredentialsError as e:
         # no session cookie and no WORKBENCH_SERVER/WORKBENCH_API_KEY
-        print(f"error: no Workbench credentials: {e}", file=sys.stderr)
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except WorkbenchError as e:
+        print(f"error: {e}", file=sys.stderr)
         return 1
 
 
