@@ -567,8 +567,8 @@ wheels = [
 
 [[package]]
 name = "posit-sdk"
-version = "0.1.dev257+gcff652ee4"
-source = { git = "https://github.com/michaelmayer2/posit-sdk-py?branch=workbench#cff652ee43c5e46ab41e16cc9dad59ff6857be23" }
+version = "0.1.dev258+g64e1285ed"
+source = { git = "https://github.com/michaelmayer2/posit-sdk-py?branch=workbench#64e1285edc22cf6f5435258662191fa7ce068c2b" }
 dependencies = [
     { name = "packaging" },
     { name = "requests" },
@@ -1074,11 +1074,12 @@ wheels = [
 
 [[package]]
 name = "snakemake-executor-plugin-workbench"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "posit-sdk" },
     { name = "snakemake-interface-executor-plugins" },
+    { name = "snakemake-interface-logger-plugins" },
 ]
 
 [package.optional-dependencies]
@@ -1101,6 +1102,7 @@ requires-dist = [
     { name = "snakemake", marker = "extra == 'snakemake'" },
     { name = "snakemake-executor-plugin-workbench", extras = ["snakemake"], marker = "extra == 'dev'" },
     { name = "snakemake-interface-executor-plugins", specifier = ">=9.3,<10" },
+    { name = "snakemake-interface-logger-plugins", specifier = ">=2.0,<3" },
 ]
 provides-extras = ["snakemake", "dev"]
 

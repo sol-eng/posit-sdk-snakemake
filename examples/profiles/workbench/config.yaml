@@ -1,0 +1,7 @@
+# Use with `snakemake --profile profiles/workbench`. Not named `default`: Snakemake applies a
+# `profiles/default` next to the Snakefile automatically, which would force every run onto
+# Workbench.
+executor: workbench
+workbench-cluster: Kubernetes
+jobs: 10
+latency-wait: 60
